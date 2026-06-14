@@ -1,8 +1,10 @@
 // ===== STATE =====
 let appState = {
   habits: [],
+  allLogs: [],           // FIXED: now properly set up from the start
   checkinToday: null,
   todayStr: null,
+  isFirstSession: false, // FIXED: tracks if user just finished onboarding
   onboardingData: {
     goal: null,
     customGoal: "",
@@ -39,9 +41,11 @@ const HABIT_TEMPLATES = {
   }
 };
 
-// ===== AI PLACEHOLDER =====
-function generateAISummary(data) {
-  // Gemini API will be used later
+// ===== SAFETY: Stops habit names from breaking the screen =====
+function escapeHtml(str) {
+  const d = document.createElement('div');
+  d.textContent = str ?? '';
+  return d.innerHTML;
 }
 
 // ===== UTILS =====
@@ -51,6 +55,12 @@ function getTodayStr() {
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
   return `${yyyy}-${mm}-${dd}`;
+}
+
+// Converts a date string like "2024-01-15" into a Date safely
+function parseLocalDate(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(y, m - 1, d);
 }
 
 function $(selector) {
@@ -91,13 +101,14 @@ async function initApp() {
 
     if (!checkins || checkins.length === 0) {
       appState.checkinToday = null;
+      appState.isFirstSession = false; // returning user, not first session
       renderCheckIn();
     } else {
       appState.checkinToday = checkins[0];
       await renderDashboard();
     }
   } catch (err) {
-    render(`<div class="error-msg">Error loading app: ${err.message}</div>
+    render(`<div class="error-msg">Error loading app: ${escapeHtml(err.message)}</div>
       <button class="btn" onclick="initApp()">Retry</button>`);
   }
 }
@@ -115,7 +126,7 @@ function renderOnboardingStep1() {
   const optionsHtml = options.map(opt => `
     <div class="option-item ${appState.onboardingData.goal === opt ? "selected" : ""}"
          onclick="selectGoal('${opt}')">
-      ${opt}
+      ${escapeHtml(opt)}
     </div>
   `).join("");
 
@@ -123,7 +134,7 @@ function renderOnboardingStep1() {
   if (appState.onboardingData.goal === "Custom") {
     customInputHtml = `
       <input type="text" id="customGoalInput" placeholder="Describe your goal"
-        value="${appState.onboardingData.customGoal || ""}"
+        value="${escapeHtml(appState.onboardingData.customGoal || "")}"
         oninput="appState.onboardingData.customGoal = this.value" />
     `;
   }
@@ -161,7 +172,7 @@ function renderOnboardingStep2() {
   const optionsHtml = options.map(opt => `
     <div class="option-item ${appState.onboardingData.difficulty === opt ? "selected" : ""}"
          onclick="selectDifficulty('${opt}')">
-      ${opt}
+      ${escapeHtml(opt)}
     </div>
   `).join("");
 
@@ -199,7 +210,7 @@ function renderOnboardingStep3() {
   const habitsHtml = appState.onboardingData.habitList.map((habit, idx) => `
     <div class="habit-item">
       <div class="habit-info">
-        <div class="habit-name">${habit}</div>
+        <div class="habit-name">${escapeHtml(habit)}</div>
       </div>
       <div class="habit-actions">
         <button class="remove-btn" onclick="removeOnboardingHabit(${idx})">Remove</button>
@@ -247,7 +258,7 @@ function renderOnboardingStep4() {
   const habitsHtml = appState.onboardingData.habitList.map(habit => `
     <div class="habit-item">
       <div class="habit-info">
-        <div class="habit-name">${habit}</div>
+        <div class="habit-name">${escapeHtml(habit)}</div>
       </div>
     </div>
   `).join("");
@@ -274,15 +285,26 @@ async function saveOnboardingHabits() {
     if (error) throw error;
 
     appState.habits = data || [];
+    appState.isFirstSession = true; // FIXED: mark as new user so check-in skips "yesterday" question
     renderCheckIn();
   } catch (err) {
-    render(`<div class="error-msg">Error saving habits: ${err.message}</div>
+    render(`<div class="error-msg">Error saving habits: ${escapeHtml(err.message)}</div>
       <button class="btn" onclick="renderOnboardingStep4()">Back</button>`);
   }
 }
 
 // ===== DAILY CHECK-IN =====
 function renderCheckIn() {
+  // FIXED: New users (just finished setup) don't see the "yesterday" question
+  const yesterdayHtml = appState.isFirstSession
+    ? `<p style="color:#888; font-size:14px; margin: 12px 0;">
+        Welcome! This is your first day — no yesterday to review yet.
+       </p>`
+    : `<div class="checkbox-row">
+        <input type="checkbox" id="completedInput" />
+        <label for="completedInput">Did you complete yesterday's goals?</label>
+       </div>`;
+
   render(`
     <h1>Daily Check-In</h1>
     <p>${appState.todayStr}</p>
@@ -290,10 +312,7 @@ function renderCheckIn() {
     <label>What's your intention for today?</label>
     <textarea id="intentionInput" rows="3" placeholder="e.g. Stay focused and avoid distractions"></textarea>
 
-    <div class="checkbox-row">
-      <input type="checkbox" id="completedInput" />
-      <label for="completedInput">Did you complete yesterday's goals?</label>
-    </div>
+    ${yesterdayHtml}
 
     <label>Reflection</label>
     <textarea id="reflectionInput" rows="3" placeholder="Any thoughts about yesterday or today"></textarea>
@@ -304,7 +323,8 @@ function renderCheckIn() {
 
 async function saveCheckIn() {
   const intention = $("#intentionInput").value.trim();
-  const completed = $("#completedInput").checked;
+  const completedCheckbox = $("#completedInput");
+  const completed = completedCheckbox ? completedCheckbox.checked : false;
   const reflection = $("#reflectionInput").value.trim();
 
   render(`<div class="loading">Saving check-in...</div>`);
@@ -325,19 +345,26 @@ async function saveCheckIn() {
     appState.checkinToday = data[0];
     await renderDashboard();
   } catch (err) {
-    render(`<div class="error-msg">Error saving check-in: ${err.message}</div>
+    render(`<div class="error-msg">Error saving check-in: ${escapeHtml(err.message)}</div>
       <button class="btn" onclick="renderCheckIn()">Back</button>`);
   }
 }
 
 // ===== DASHBOARD =====
 async function renderDashboard() {
+  appState.todayStr = getTodayStr(); // FIXED: always refresh the date when dashboard opens
   render(`<div class="loading">Loading dashboard...</div>`);
 
   try {
+    // FIXED: Only load last 90 days instead of all history
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - 90);
+    const cutoff = formatDate(cutoffDate);
+
     const { data: logs, error: logsErr } = await supabaseClient
       .from("habit_logs")
-      .select("*");
+      .select("*")
+      .gte("date", cutoff);
 
     if (logsErr) throw logsErr;
 
@@ -353,12 +380,13 @@ async function renderDashboard() {
       return `
         <div class="habit-item">
           <div class="habit-info">
-            <div class="habit-name">${habit.name}</div>
+            <div class="habit-name">${escapeHtml(habit.name)}</div>
             <div class="habit-streak">Streak: ${streak} day${streak === 1 ? "" : "s"}</div>
           </div>
           <div class="habit-actions">
-            <button class="done-btn ${isDone ? "done" : ""}" onclick="toggleHabitDone('${habit.id}', ${isDone})">
-              ${isDone ? "Done" : "Mark Done"}
+            <button class="done-btn ${isDone ? "done" : ""}"
+              onclick="toggleHabitDone('${habit.id}', ${isDone})">
+              ${isDone ? "Done ✓" : "Mark Done"}
             </button>
             <button class="remove-btn" onclick="deleteHabit('${habit.id}')">X</button>
           </div>
@@ -392,40 +420,41 @@ async function renderDashboard() {
 
       <div class="section">
         <h2>Today's Check-In</h2>
-        <p><strong>Intention:</strong> ${appState.checkinToday.intention || "-"}</p>
+        <p><strong>Intention:</strong> ${escapeHtml(appState.checkinToday.intention || "-")}</p>
         <p><strong>Completed yesterday's goals:</strong> ${appState.checkinToday.completed ? "Yes" : "No"}</p>
-        <p><strong>Reflection:</strong> ${appState.checkinToday.reflection || "-"}</p>
+        <p><strong>Reflection:</strong> ${escapeHtml(appState.checkinToday.reflection || "-")}</p>
       </div>
     `);
   } catch (err) {
-    render(`<div class="error-msg">Error loading dashboard: ${err.message}</div>
+    render(`<div class="error-msg">Error loading dashboard: ${escapeHtml(err.message)}</div>
       <button class="btn" onclick="renderDashboard()">Retry</button>`);
   }
 }
 
 // ===== HABIT LOGIC =====
-function calculateStreak(habitId) {
-  const logsForHabit = appState.allLogs
-    .filter(l => l.habit_id === habitId && l.completed)
-    .map(l => l.date)
-    .sort((a, b) => new Date(b) - new Date(a));
 
-  if (logsForHabit.length === 0) return 0;
+// FIXED: Streak now shows correctly even BEFORE you tick today
+function calculateStreak(habitId) {
+  const completedDates = new Set(
+    appState.allLogs
+      .filter(l => l.habit_id === habitId && l.completed)
+      .map(l => l.date)
+  );
+
+  if (completedDates.size === 0) return 0;
 
   let streak = 0;
-  let currentDate = new Date(appState.todayStr);
+  let cursor = parseLocalDate(appState.todayStr);
 
-  for (let i = 0; i < logsForHabit.length; i++) {
-    const expectedStr = formatDate(currentDate);
-    if (logsForHabit[i] === expectedStr) {
-      streak++;
-      currentDate.setDate(currentDate.getDate() - 1);
-    } else if (i === 0 && logsForHabit[i] !== appState.todayStr) {
-      // most recent log isn't today, check if it's yesterday to keep streak alive logic simple
-      break;
-    } else {
-      break;
-    }
+  // If today isn't done yet, start counting from yesterday
+  if (!completedDates.has(formatDate(cursor))) {
+    cursor.setDate(cursor.getDate() - 1);
+  }
+
+  // Count backwards through consecutive completed days
+  while (completedDates.has(formatDate(cursor))) {
+    streak++;
+    cursor.setDate(cursor.getDate() - 1);
   }
 
   return streak;
@@ -438,15 +467,18 @@ function formatDate(d) {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+// FIXED: Completion % only counts habits that still exist (prevents >100%)
 function calculateCompletionPercent() {
   if (appState.habits.length === 0) return 0;
 
-  const todaysLogs = appState.allLogs.filter(l => l.date === appState.todayStr);
-  const completedToday = todaysLogs.filter(l => l.completed).length;
+  const activeIds = new Set(appState.habits.map(h => h.id));
+  const todaysLogs = appState.allLogs.filter(
+    l => l.date === appState.todayStr && activeIds.has(l.habit_id)
+  );
+  const completed = todaysLogs.filter(l => l.completed).length;
   const total = appState.habits.length;
 
-  if (total === 0) return 0;
-  return Math.round((completedToday / total) * 100);
+  return Math.round((completed / total) * 100);
 }
 
 async function toggleHabitDone(habitId, currentlyDone) {
