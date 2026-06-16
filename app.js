@@ -50,6 +50,16 @@ function escapeHtml(str) {
   return d.innerHTML;
 }
 
+// NEW — safe for use inside value="..." attributes (escapeHtml alone is not)
+function escapeAttr(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 function getTodayStr() {
   const d = new Date();
   const yyyy = d.getFullYear();
@@ -215,7 +225,7 @@ function renderOnboardingStep1() {
   if (appState.onboardingData.goal === "Custom") {
     customInputHtml = `
       <input type="text" id="customGoalInput" placeholder="Describe your goal"
-        value="${escapeHtml(appState.onboardingData.customGoal || "")}"
+        value="${escapeAttr(appState.onboardingData.customGoal || "")}"
         oninput="appState.onboardingData.customGoal = this.value" />
     `;
   }
@@ -404,6 +414,8 @@ function renderCheckIn() {
   `);
 }
 
+// CHANGED — upsert instead of insert, so a duplicate save updates today's
+// row instead of creating a second one
 async function saveCheckIn() {
   const intention = $("#intentionInput").value.trim();
   const completedCheckbox = $("#completedInput");
@@ -415,13 +427,16 @@ async function saveCheckIn() {
   try {
     const { data, error } = await supabaseClient
       .from("daily_checkins")
-      .insert([{
-        date: appState.todayStr,
-        intention,
-        completed,
-        reflection,
-        user_id: currentUser.id
-      }])
+      .upsert(
+        {
+          date: appState.todayStr,
+          intention,
+          completed,
+          reflection,
+          user_id: currentUser.id
+        },
+        { onConflict: "user_id,date" }
+      )
       .select();
 
     if (error) throw error;
@@ -435,6 +450,7 @@ async function saveCheckIn() {
 }
 
 // ===== DASHBOARD =====
+// CHANGED — this now only fetches data, then hands off to renderDashboardView()
 async function renderDashboard() {
   appState.todayStr = getTodayStr();
   render(`<div class="loading">Loading dashboard...</div>`);
@@ -453,68 +469,73 @@ async function renderDashboard() {
     if (logsErr) throw logsErr;
 
     appState.allLogs = logs || [];
-
-    const todaysLogs = appState.allLogs.filter(l => l.date === appState.todayStr);
-
-    const habitsHtml = appState.habits.map(habit => {
-      const todayLog = todaysLogs.find(l => l.habit_id === habit.id);
-      const isDone = todayLog ? todayLog.completed : false;
-      const streak = calculateStreak(habit.id);
-
-      return `
-        <div class="habit-item">
-          <div class="habit-info">
-            <div class="habit-name">${escapeHtml(habit.name)}</div>
-            <div class="habit-streak">Streak: ${streak} day${streak === 1 ? "" : "s"}</div>
-          </div>
-          <div class="habit-actions">
-            <button class="done-btn ${isDone ? "done" : ""}"
-              onclick="toggleHabitDone('${habit.id}', ${isDone})">
-              ${isDone ? "Done ✓" : "Mark Done"}
-            </button>
-            <button class="remove-btn" onclick="deleteHabit('${habit.id}')">X</button>
-          </div>
-        </div>
-      `;
-    }).join("");
-
-    const completionPercent = calculateCompletionPercent();
-
-    render(`
-      <button class="btn btn-secondary" onclick="handleLogout()" style="margin-bottom:16px;">Log Out</button>
-
-      <h1>Dashboard</h1>
-      <p>${appState.todayStr}</p>
-
-      <div class="summary-box">
-        <div class="percent">${completionPercent}%</div>
-        <div>Overall completion</div>
-      </div>
-
-      <div class="section">
-        <h2>Your Habits</h2>
-        <div id="habitListContainer">${habitsHtml}</div>
-      </div>
-
-      <div class="section">
-        <h2>Add a new habit</h2>
-        <div class="add-habit-row">
-          <input type="text" id="newDashHabitInput" placeholder="New habit name" />
-          <button class="btn" onclick="addDashboardHabit()" style="margin:0;">Add</button>
-        </div>
-      </div>
-
-      <div class="section">
-        <h2>Today's Check-In</h2>
-        <p><strong>Intention:</strong> ${escapeHtml(appState.checkinToday.intention || "-")}</p>
-        <p><strong>Completed yesterday's goals:</strong> ${appState.checkinToday.completed ? "Yes" : "No"}</p>
-        <p><strong>Reflection:</strong> ${escapeHtml(appState.checkinToday.reflection || "-")}</p>
-      </div>
-    `);
+    renderDashboardView();
   } catch (err) {
     render(`<div class="error-msg">Error loading dashboard: ${escapeHtml(err.message)}</div>
       <button class="btn" onclick="renderDashboard()">Retry</button>`);
   }
+}
+
+// NEW — draws the dashboard from whatever is already in memory, no database
+// call. This is what makes "Mark Done" feel instant.
+function renderDashboardView() {
+  const todaysLogs = appState.allLogs.filter(l => l.date === appState.todayStr);
+
+  const habitsHtml = appState.habits.map(habit => {
+    const todayLog = todaysLogs.find(l => l.habit_id === habit.id);
+    const isDone = todayLog ? todayLog.completed : false;
+    const streak = calculateStreak(habit.id);
+
+    return `
+      <div class="habit-item">
+        <div class="habit-info">
+          <div class="habit-name">${escapeHtml(habit.name)}</div>
+          <div class="habit-streak">Streak: ${streak} day${streak === 1 ? "" : "s"}</div>
+        </div>
+        <div class="habit-actions">
+          <button class="done-btn ${isDone ? "done" : ""}"
+            onclick="toggleHabitDone(this, '${habit.id}', ${isDone})">
+            ${isDone ? "Done ✓" : "Mark Done"}
+          </button>
+          <button class="remove-btn" onclick="deleteHabit('${habit.id}')">X</button>
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  const completionPercent = calculateCompletionPercent();
+
+  render(`
+    <button class="btn btn-secondary" onclick="handleLogout()" style="margin-bottom:16px;">Log Out</button>
+
+    <h1>Dashboard</h1>
+    <p>${appState.todayStr}</p>
+
+    <div class="summary-box">
+      <div class="percent">${completionPercent}%</div>
+      <div>Overall completion</div>
+    </div>
+
+    <div class="section">
+      <h2>Your Habits</h2>
+      <div id="habitListContainer">${habitsHtml}</div>
+    </div>
+
+    <div class="section">
+      <h2>Add a new habit</h2>
+      <div class="add-habit-row">
+        <input type="text" id="newDashHabitInput" placeholder="New habit name" />
+        <button class="btn" onclick="addDashboardHabit()" style="margin:0;">Add</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Today's Check-In</h2>
+      <p><strong>Intention:</strong> ${escapeHtml(appState.checkinToday.intention || "-")}</p>
+      <p><strong>Completed yesterday's goals:</strong> ${appState.checkinToday.completed ? "Yes" : "No"}</p>
+      <p><strong>Reflection:</strong> ${escapeHtml(appState.checkinToday.reflection || "-")}</p>
+    </div>
+  `);
 }
 
 // ===== HABIT LOGIC =====
@@ -562,45 +583,44 @@ function calculateCompletionPercent() {
   return Math.round((completed / total) * 100);
 }
 
-async function toggleHabitDone(habitId, currentlyDone) {
+// CHANGED — upsert instead of separate insert/update branches, plus the
+// button is disabled while the request is in flight so fast double-taps
+// can't create two rows for the same habit on the same day
+async function toggleHabitDone(btnEl, habitId, currentlyDone) {
+  btnEl.disabled = true;
+
   try {
     const newStatus = !currentlyDone;
 
-    const existing = appState.allLogs.find(
-      l => l.habit_id === habitId && l.date === appState.todayStr
-    );
-
-    if (existing) {
-      const { error } = await supabaseClient
-        .from("habit_logs")
-        .update({ completed: newStatus })
-        .eq("id", existing.id);
-
-      if (error) throw error;
-
-      existing.completed = newStatus;
-    } else {
-      const { data, error } = await supabaseClient
-        .from("habit_logs")
-        .insert([{
+    const { data, error } = await supabaseClient
+      .from("habit_logs")
+      .upsert(
+        {
           habit_id: habitId,
           date: appState.todayStr,
           completed: newStatus,
           user_id: currentUser.id
-        }])
-        .select();
+        },
+        { onConflict: "user_id,habit_id,date" }
+      )
+      .select();
 
-      if (error) throw error;
+    if (error) throw error;
 
-      appState.allLogs.push(data[0]);
-    }
+    const idx = appState.allLogs.findIndex(
+      l => l.habit_id === habitId && l.date === appState.todayStr
+    );
+    if (idx >= 0) appState.allLogs[idx] = data[0];
+    else appState.allLogs.push(data[0]);
 
-    await renderDashboard();
+    renderDashboardView();
   } catch (err) {
     alert("Error updating habit: " + err.message);
+    btnEl.disabled = false;
   }
 }
 
+// CHANGED — redraws from memory instead of re-fetching everything
 async function addDashboardHabit() {
   const input = $("#newDashHabitInput");
   const val = input.value.trim();
@@ -615,23 +635,18 @@ async function addDashboardHabit() {
     if (error) throw error;
 
     appState.habits.push(data[0]);
-    await renderDashboard();
+    renderDashboardView();
   } catch (err) {
     alert("Error adding habit: " + err.message);
   }
 }
 
+// CHANGED — one delete call instead of two (the database now deletes the
+// habit's logs automatically), and redraws from memory instead of refetching
 async function deleteHabit(habitId) {
   if (!confirm("Remove this habit? This cannot be undone.")) return;
 
   try {
-    const { error: logsError } = await supabaseClient
-      .from("habit_logs")
-      .delete()
-      .eq("habit_id", habitId);
-
-    if (logsError) throw logsError;
-
     const { error } = await supabaseClient
       .from("habits")
       .delete()
@@ -641,7 +656,7 @@ async function deleteHabit(habitId) {
 
     appState.habits = appState.habits.filter(h => h.id !== habitId);
     appState.allLogs = appState.allLogs.filter(l => l.habit_id !== habitId);
-    await renderDashboard();
+    renderDashboardView();
   } catch (err) {
     alert("Error deleting habit: " + err.message);
   }
