@@ -1,10 +1,10 @@
 // ===== STATE =====
 let appState = {
   habits: [],
-  allLogs: [],           // FIXED: now properly set up from the start
+  allLogs: [],
   checkinToday: null,
   todayStr: null,
-  isFirstSession: false, // FIXED: tracks if user just finished onboarding
+  isFirstSession: false,
   onboardingData: {
     goal: null,
     customGoal: "",
@@ -12,6 +12,9 @@ let appState = {
     habitList: []
   }
 };
+
+let currentUser = null;
+let authMode = "login";
 
 const HABIT_TEMPLATES = {
   "Discipline / Consistency": {
@@ -41,14 +44,12 @@ const HABIT_TEMPLATES = {
   }
 };
 
-// ===== SAFETY: Stops habit names from breaking the screen =====
 function escapeHtml(str) {
   const d = document.createElement('div');
   d.textContent = str ?? '';
   return d.innerHTML;
 }
 
-// ===== UTILS =====
 function getTodayStr() {
   const d = new Date();
   const yyyy = d.getFullYear();
@@ -57,7 +58,6 @@ function getTodayStr() {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-// Converts a date string like "2024-01-15" into a Date safely
 function parseLocalDate(dateStr) {
   const [y, m, d] = dateStr.split('-').map(Number);
   return new Date(y, m - 1, d);
@@ -71,19 +71,99 @@ function render(html) {
   $("#app").innerHTML = html;
 }
 
+// ===== AUTH SCREEN =====
+function renderAuthScreen() {
+  render(`
+    <h1>Discipline</h1>
+    <p>${authMode === "login" ? "Log in to continue" : "Create your account"}</p>
+
+    <label>Email</label>
+    <input type="email" id="authEmail" placeholder="you@example.com" />
+
+    <label>Password</label>
+    <input type="password" id="authPassword" placeholder="At least 6 characters" />
+
+    <div id="authError" class="error-msg"></div>
+
+    <button class="btn" id="authSubmitBtn" onclick="handleAuthSubmit()">
+      ${authMode === "login" ? "Log In" : "Sign Up"}
+    </button>
+
+    <button class="btn btn-secondary" onclick="toggleAuthMode()">
+      ${authMode === "login" ? "Don't have an account? Sign Up" : "Already have an account? Log In"}
+    </button>
+  `);
+}
+
+function toggleAuthMode() {
+  authMode = authMode === "login" ? "signup" : "login";
+  renderAuthScreen();
+}
+
+async function handleAuthSubmit() {
+  const email = $("#authEmail").value.trim();
+  const password = $("#authPassword").value;
+  const errorBox = $("#authError");
+  const btn = $("#authSubmitBtn");
+  errorBox.textContent = "";
+
+  if (!email || !password) {
+    errorBox.textContent = "Please fill in both fields.";
+    return;
+  }
+
+  btn.disabled = true;
+
+  try {
+    if (authMode === "signup") {
+      const { data, error } = await supabaseClient.auth.signUp({ email, password });
+      if (error) throw error;
+      if (!data.session) {
+        errorBox.textContent = "Check your email to confirm your account, then log in.";
+        btn.disabled = false;
+        return;
+      }
+      currentUser = data.user;
+    } else {
+      const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+      currentUser = data.user;
+    }
+    initApp();
+  } catch (err) {
+    errorBox.textContent = err.message;
+    btn.disabled = false;
+  }
+}
+
+async function handleLogout() {
+  await supabaseClient.auth.signOut();
+  currentUser = null;
+  authMode = "login";
+  renderAuthScreen();
+}
+
 // ===== INIT =====
 async function initApp() {
-  appState.todayStr = getTodayStr();
   render(`<div class="loading">Loading...</div>`);
+
+  const { data: sessionData } = await supabaseClient.auth.getSession();
+  if (!sessionData.session) {
+    currentUser = null;
+    renderAuthScreen();
+    return;
+  }
+  currentUser = sessionData.session.user;
+  appState.todayStr = getTodayStr();
 
   try {
     const { data: habits, error: habitsErr } = await supabaseClient
       .from("habits")
       .select("*")
+      .eq("user_id", currentUser.id)
       .order("created_at", { ascending: true });
 
     if (habitsErr) throw habitsErr;
-
     appState.habits = habits || [];
 
     if (appState.habits.length === 0) {
@@ -94,6 +174,7 @@ async function initApp() {
     const { data: checkins, error: checkinErr } = await supabaseClient
       .from("daily_checkins")
       .select("*")
+      .eq("user_id", currentUser.id)
       .eq("date", appState.todayStr)
       .limit(1);
 
@@ -101,7 +182,7 @@ async function initApp() {
 
     if (!checkins || checkins.length === 0) {
       appState.checkinToday = null;
-      appState.isFirstSession = false; // returning user, not first session
+      appState.isFirstSession = false;
       renderCheckIn();
     } else {
       appState.checkinToday = checkins[0];
@@ -276,7 +357,10 @@ async function saveOnboardingHabits() {
   render(`<div class="loading">Saving...</div>`);
 
   try {
-    const rows = appState.onboardingData.habitList.map(name => ({ name }));
+    const rows = appState.onboardingData.habitList.map(name => ({
+      name,
+      user_id: currentUser.id
+    }));
     const { data, error } = await supabaseClient
       .from("habits")
       .insert(rows)
@@ -285,7 +369,7 @@ async function saveOnboardingHabits() {
     if (error) throw error;
 
     appState.habits = data || [];
-    appState.isFirstSession = true; // FIXED: mark as new user so check-in skips "yesterday" question
+    appState.isFirstSession = true;
     renderCheckIn();
   } catch (err) {
     render(`<div class="error-msg">Error saving habits: ${escapeHtml(err.message)}</div>
@@ -295,7 +379,6 @@ async function saveOnboardingHabits() {
 
 // ===== DAILY CHECK-IN =====
 function renderCheckIn() {
-  // FIXED: New users (just finished setup) don't see the "yesterday" question
   const yesterdayHtml = appState.isFirstSession
     ? `<p style="color:#888; font-size:14px; margin: 12px 0;">
         Welcome! This is your first day — no yesterday to review yet.
@@ -336,7 +419,8 @@ async function saveCheckIn() {
         date: appState.todayStr,
         intention,
         completed,
-        reflection
+        reflection,
+        user_id: currentUser.id
       }])
       .select();
 
@@ -352,11 +436,10 @@ async function saveCheckIn() {
 
 // ===== DASHBOARD =====
 async function renderDashboard() {
-  appState.todayStr = getTodayStr(); // FIXED: always refresh the date when dashboard opens
+  appState.todayStr = getTodayStr();
   render(`<div class="loading">Loading dashboard...</div>`);
 
   try {
-    // FIXED: Only load last 90 days instead of all history
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - 90);
     const cutoff = formatDate(cutoffDate);
@@ -364,6 +447,7 @@ async function renderDashboard() {
     const { data: logs, error: logsErr } = await supabaseClient
       .from("habit_logs")
       .select("*")
+      .eq("user_id", currentUser.id)
       .gte("date", cutoff);
 
     if (logsErr) throw logsErr;
@@ -397,6 +481,8 @@ async function renderDashboard() {
     const completionPercent = calculateCompletionPercent();
 
     render(`
+      <button class="btn btn-secondary" onclick="handleLogout()" style="margin-bottom:16px;">Log Out</button>
+
       <h1>Dashboard</h1>
       <p>${appState.todayStr}</p>
 
@@ -432,8 +518,6 @@ async function renderDashboard() {
 }
 
 // ===== HABIT LOGIC =====
-
-// FIXED: Streak now shows correctly even BEFORE you tick today
 function calculateStreak(habitId) {
   const completedDates = new Set(
     appState.allLogs
@@ -446,12 +530,10 @@ function calculateStreak(habitId) {
   let streak = 0;
   let cursor = parseLocalDate(appState.todayStr);
 
-  // If today isn't done yet, start counting from yesterday
   if (!completedDates.has(formatDate(cursor))) {
     cursor.setDate(cursor.getDate() - 1);
   }
 
-  // Count backwards through consecutive completed days
   while (completedDates.has(formatDate(cursor))) {
     streak++;
     cursor.setDate(cursor.getDate() - 1);
@@ -467,7 +549,6 @@ function formatDate(d) {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-// FIXED: Completion % only counts habits that still exist (prevents >100%)
 function calculateCompletionPercent() {
   if (appState.habits.length === 0) return 0;
 
@@ -504,7 +585,8 @@ async function toggleHabitDone(habitId, currentlyDone) {
         .insert([{
           habit_id: habitId,
           date: appState.todayStr,
-          completed: newStatus
+          completed: newStatus,
+          user_id: currentUser.id
         }])
         .select();
 
@@ -527,7 +609,7 @@ async function addDashboardHabit() {
   try {
     const { data, error } = await supabaseClient
       .from("habits")
-      .insert([{ name: val }])
+      .insert([{ name: val, user_id: currentUser.id }])
       .select();
 
     if (error) throw error;
