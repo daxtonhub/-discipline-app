@@ -141,3 +141,35 @@ input::placeholder, textarea::placeholder { color: var(--text-secondary); }
 .day-detail-habit.missed { color: var(--red); }
 .reflection-text { color: var(--text-primary); font-size: 15px; }
 .reflection-empty { color: var(--text-secondary); font-style: italic; font-size: 15px; }
+
+html, body {
+  overscroll-behavior: none;
+}
+
+.miss-modal {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+  z-index: 9999;
+  padding: 24px 20px;
+  display: flex;
+  flex-direction: column;
+  overscroll-behavior: none;
+}
+
+.miss-modal h1 {
+  font-size: 28px;
+  margin-top: 60px;
+  margin-bottom: 16px;
+}
+
+.miss-subtext {
+  font-size: 16px;
+  color: var(--text-secondary);
+  margin-bottom: 16px;
+}
+
+.miss-modal textarea {
+  min-height: 140px;
+  margin-bottom: 16px;
+}
