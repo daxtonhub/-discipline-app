@@ -12,6 +12,7 @@ let appState = {
   historyCheckins: [],
   selectedDay: null,
   selectedDayMiss: null,
+  pendingMissDate: null,
   onboardingData: {
     goal: null,
     customGoal: "",
@@ -23,6 +24,7 @@ let appState = {
 let currentUser = null;
 let authMode = "login";
 let historyRequestToken = 0;
+let missGuardActive = false;
 
 const HABIT_TEMPLATES = {
   "Discipline / Consistency": {
@@ -204,6 +206,21 @@ async function initApp() {
       return;
     }
 
+    const missNeeded = await checkMissModalNeeded();
+    if (missNeeded) {
+      renderMissModal();
+      return;
+    }
+
+    await continueInitAfterMissCheck();
+  } catch (err) {
+    render(`<div class="page-content"><div class="error-msg">Error loading app: ${escapeHtml(err.message)}</div>
+      <button class="btn" onclick="initApp()">Retry</button></div>`);
+  }
+}
+
+async function continueInitAfterMissCheck() {
+  try {
     const { data: checkins, error: checkinErr } = await supabaseClient
       .from("daily_checkins")
       .select("*")
@@ -225,6 +242,100 @@ async function initApp() {
     render(`<div class="page-content"><div class="error-msg">Error loading app: ${escapeHtml(err.message)}</div>
       <button class="btn" onclick="initApp()">Retry</button></div>`);
   }
+}
+
+// ===== MISS HANDLING ("WHY PROMPT") =====
+async function checkMissModalNeeded() {
+  const yesterday = parseLocalDate(appState.todayStr);
+  yesterday.setDate(yesterday.getDate() - 1);
+  const yesterdayStr = formatDate(yesterday);
+
+  const accountCreatedStr = currentUser.created_at.slice(0, 10);
+  if (yesterdayStr < accountCreatedStr) return false;
+
+  const { data: completedLogs, error: logsErr } = await supabaseClient
+    .from("habit_logs")
+    .select("id")
+    .eq("user_id", currentUser.id)
+    .eq("date", yesterdayStr)
+    .eq("completed", true)
+    .limit(1);
+  if (logsErr) throw logsErr;
+  if (completedLogs && completedLogs.length > 0) return false;
+
+  const { data: missRows, error: missErr } = await supabaseClient
+    .from("miss_reflections")
+    .select("id")
+    .eq("user_id", currentUser.id)
+    .eq("missed_date", yesterdayStr)
+    .limit(1);
+  if (missErr) throw missErr;
+  if (missRows && missRows.length > 0) return false;
+
+  appState.pendingMissDate = yesterdayStr;
+  return true;
+}
+
+function renderMissModal() {
+  render(`
+    <div class="miss-modal">
+      <h1>Yesterday you missed.</h1>
+      <p class="miss-subtext">What happened?</p>
+      <textarea id="missInput" rows="5" placeholder="Write here..." oninput="updateMissButtonState()"></textarea>
+      <button class="btn" id="missSubmitBtn" disabled onclick="submitMissReflection()">Own It</button>
+    </div>
+  `);
+  setupMissBackButtonGuard();
+  setTimeout(() => {
+    const el = $("#missInput");
+    if (el) el.focus();
+  }, 50);
+}
+
+function updateMissButtonState() {
+  const val = $("#missInput").value;
+  $("#missSubmitBtn").disabled = val.trim().length < 10;
+}
+
+async function submitMissReflection() {
+  const val = $("#missInput").value.trim();
+  if (val.length < 10) return;
+
+  const btn = $("#missSubmitBtn");
+  btn.disabled = true;
+
+  try {
+    const { error } = await supabaseClient
+      .from("miss_reflections")
+      .upsert(
+        [{ user_id: currentUser.id, missed_date: appState.pendingMissDate, response: val }],
+        { onConflict: "user_id,missed_date" }
+      );
+    if (error) throw error;
+
+    teardownMissBackButtonGuard();
+    await continueInitAfterMissCheck();
+  } catch (err) {
+    alert("Error saving: " + err.message);
+    btn.disabled = false;
+  }
+}
+
+function missPopStateHandler() {
+  if (missGuardActive) {
+    history.pushState({ missModal: true }, "");
+  }
+}
+
+function setupMissBackButtonGuard() {
+  missGuardActive = true;
+  history.pushState({ missModal: true }, "");
+  window.addEventListener("popstate", missPopStateHandler);
+}
+
+function teardownMissBackButtonGuard() {
+  missGuardActive = false;
+  window.removeEventListener("popstate", missPopStateHandler);
 }
 
 // ===== ONBOARDING STEP 1 =====
@@ -512,13 +623,14 @@ function renderDashboardView() {
   const habitsHtml = appState.habits.map(habit => {
     const todayLog = todaysLogs.find(l => l.habit_id === habit.id);
     const isDone = todayLog ? todayLog.completed : false;
-    const streak = calculateStreak(habit.id);
+    const streakResult = calculateStreak(habit);
+    const streakLabel = formatStreakLabel(streakResult);
 
     return `
       <div class="habit-item">
         <div class="habit-info">
           <div class="habit-name">${escapeHtml(habit.name)}</div>
-          <div class="habit-streak">Streak: ${streak} day${streak === 1 ? "" : "s"}</div>
+          <div class="habit-streak">${streakLabel}</div>
         </div>
         <div class="habit-actions">
           <button class="done-btn ${isDone ? "done" : ""}"
@@ -567,28 +679,66 @@ function renderDashboardView() {
 }
 
 // ===== HABIT LOGIC =====
-function calculateStreak(habitId) {
+// Streak now tolerates misses inside a rolling 30-day window:
+// - up to 2 misses total → streak continues, label shows the miss count
+// - a 3rd miss in the window, OR 3 misses in a row → streak resets to 0
+function calculateStreak(habit) {
   const completedDates = new Set(
     appState.allLogs
-      .filter(l => l.habit_id === habitId && l.completed)
+      .filter(l => l.habit_id === habit.id && l.completed)
       .map(l => l.date)
   );
 
-  if (completedDates.size === 0) return 0;
-
-  let streak = 0;
+  const createdStr = habit.created_at.slice(0, 10);
   let cursor = parseLocalDate(appState.todayStr);
 
+  // Today still "in progress" if not completed yet — don't count it as a miss
   if (!completedDates.has(formatDate(cursor))) {
     cursor.setDate(cursor.getDate() - 1);
   }
 
-  while (completedDates.has(formatDate(cursor))) {
-    streak++;
+  let streakDays = 0;
+  let missesInWindow = 0;
+  let consecutiveMisses = 0;
+  let daysChecked = 0;
+
+  while (true) {
+    const cursorStr = formatDate(cursor);
+    if (cursorStr < createdStr) break;
+
+    const withinRollingWindow = daysChecked < 30;
+    const isCompleted = completedDates.has(cursorStr);
+
+    if (isCompleted) {
+      streakDays++;
+      consecutiveMisses = 0;
+    } else if (withinRollingWindow) {
+      missesInWindow++;
+      consecutiveMisses++;
+
+      if (consecutiveMisses >= 3 || missesInWindow > 2) {
+        streakDays = 0;
+        missesInWindow = 0;
+        break;
+      }
+      streakDays++;
+    } else {
+      break;
+    }
+
+    daysChecked++;
     cursor.setDate(cursor.getDate() - 1);
   }
 
-  return streak;
+  return { days: streakDays, misses: missesInWindow };
+}
+
+function formatStreakLabel(result) {
+  if (result.days === 0) return "Streak: 0 days";
+  let label = `${result.days} day${result.days === 1 ? "" : "s"} ⚡`;
+  if (result.misses === 1) label += " (1 miss)";
+  else if (result.misses === 2) label += " (2 misses)";
+  return label;
 }
 
 function calculateCompletionPercent() {
@@ -721,7 +871,7 @@ function getHistoryMonthYearMonth() {
 function getMonthMatrix(year, month) {
   const firstDay = new Date(year, month, 1);
   const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const startDow = (firstDay.getDay() + 6) % 7; // 0 = Monday
+  const startDow = (firstDay.getDay() + 6) % 7;
   const cells = [];
   for (let i = 0; i < startDow; i++) cells.push(null);
   for (let d = 1; d <= daysInMonth; d++) cells.push(d);
@@ -895,3 +1045,4 @@ function renderDayDetail() {
 
 // ===== START =====
 document.addEventListener("DOMContentLoaded", initApp);
+        
