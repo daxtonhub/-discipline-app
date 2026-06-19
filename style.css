@@ -1,188 +1,143 @@
+:root {
+  --bg: #0D0D0D;
+  --surface: #1A1A1A;
+  --border: #2A2A2A;
+  --text-primary: #F0F0F0;
+  --text-secondary: #888888;
+  --green: #2E7D52;
+  --yellow: #A67C00;
+  --red: #7D2E2E;
+  --grey: #333333;
+  --accent: #F0F0F0;
+  --destructive: #7D2E2E;
+}
+
 * {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
-  font-family: Arial, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 
-body {
-  background: #f5f5f5;
-  color: #222;
-}
+body { background: var(--bg); color: var(--text-primary); }
 
 #app {
   max-width: 480px;
   margin: 0 auto;
   min-height: 100vh;
-  background: #fff;
-  padding: 16px;
+  background: var(--bg);
+  position: relative;
 }
 
-h1, h2, h3 {
-  margin-bottom: 12px;
-}
+.page-content { padding: 20px; padding-bottom: 92px; }
 
-p {
-  margin-bottom: 12px;
-}
+h1 { font-size: 24px; font-weight: 700; color: var(--text-primary); margin-bottom: 12px; }
+h2 { font-size: 18px; font-weight: 600; color: var(--text-primary); margin-bottom: 12px; }
+p { font-size: 15px; color: var(--text-primary); margin-bottom: 12px; }
+.subtext { font-size: 13px; color: var(--text-secondary); }
 
 .btn {
   display: block;
   width: 100%;
-  padding: 12px;
+  height: 48px;
   margin: 8px 0;
-  background: #222;
-  color: #fff;
+  background: var(--accent);
+  color: var(--bg);
   border: none;
   border-radius: 6px;
-  font-size: 16px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
   text-align: center;
+  line-height: 48px;
   cursor: pointer;
 }
+.btn:disabled { background: var(--border); color: #555555; cursor: not-allowed; }
+.btn-secondary { background: transparent; color: var(--text-primary); border: 1px solid var(--border); }
+.btn-small { width: auto; height: auto; padding: 6px 12px; font-size: 14px; line-height: normal; margin: 0; }
 
-.btn-secondary {
-  background: #eee;
-  color: #222;
-  border: 1px solid #ccc;
-}
-
-.btn-small {
-  width: auto;
-  padding: 6px 12px;
-  font-size: 14px;
-}
-
-input[type="text"], textarea, select {
+input[type="text"], input[type="email"], input[type="password"], textarea {
   width: 100%;
   padding: 10px;
   margin: 8px 0;
-  border: 1px solid #ccc;
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  font-size: 16px;
+  font-size: 15px;
+  color: var(--text-primary);
 }
+textarea { font-family: inherit; }
+input::placeholder, textarea::placeholder { color: var(--text-secondary); }
 
-.option-list {
+.option-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+.option-item { padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; cursor: pointer; color: var(--text-primary); }
+.option-item.selected { border-color: var(--text-primary); font-weight: 600; }
+
+.habit-item { display: flex; justify-content: space-between; align-items: center; padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; }
+.habit-name { font-weight: 600; color: var(--text-primary); }
+.habit-streak { font-size: 13px; color: var(--text-secondary); margin-top: 4px; }
+.habit-actions { display: flex; gap: 6px; align-items: center; }
+.remove-btn { background: transparent; color: var(--destructive); border: 1px solid var(--destructive); border-radius: 6px; padding: 6px 10px; font-size: 14px; cursor: pointer; }
+.done-btn { background: var(--accent); color: var(--bg); border: none; border-radius: 6px; padding: 6px 10px; font-size: 14px; cursor: pointer; }
+.done-btn.done { background: var(--border); color: var(--text-secondary); }
+
+.summary-box { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; text-align: center; }
+.summary-box .percent { font-size: 32px; font-weight: 700; color: var(--text-primary); }
+
+.section { margin-bottom: 24px; }
+.divider { border-top: 1px solid var(--border); margin: 16px 0; }
+
+.checkbox-row { display: flex; align-items: center; gap: 8px; margin: 12px 0; }
+.checkbox-row input { width: auto; }
+
+.add-habit-row { display: flex; gap: 8px; }
+.add-habit-row input { flex: 1; }
+.add-habit-row button { width: auto; padding: 0 16px; }
+
+.loading { text-align: center; padding: 40px 0; color: var(--text-secondary); }
+.error-msg { color: var(--destructive); margin-bottom: 12px; font-size: 14px; }
+
+/* Bottom nav */
+.nav-bar {
+  position: fixed;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 100%;
+  max-width: 480px;
+  height: 56px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
   display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-bottom: 16px;
 }
+.nav-item { flex: 1; display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 600; color: #555555; cursor: pointer; }
+.nav-item.active { color: var(--text-primary); }
 
-.option-item {
-  padding: 12px;
-  border: 1px solid #ccc;
-  border-radius: 6px;
-  cursor: pointer;
-}
+/* Calendar */
+.month-nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+.month-nav h2 { margin: 0; }
+.month-nav-arrow { font-size: 20px; color: var(--text-primary); padding: 8px 12px; cursor: pointer; user-select: none; }
+.month-nav-arrow.disabled { color: #444444; cursor: not-allowed; }
 
-.option-item.selected {
-  border-color: #222;
-  background: #eee;
-  font-weight: bold;
-}
+.calendar-weekdays { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin-bottom: 4px; }
+.calendar-weekdays div { text-align: center; font-size: 12px; color: var(--text-secondary); }
 
-.habit-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 10px;
-  border: 1px solid #ddd;
-  border-radius: 6px;
-  margin-bottom: 8px;
-}
+.calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin-bottom: 16px; }
+.calendar-day { aspect-ratio: 1; display: flex; align-items: center; justify-content: center; border-radius: 4px; font-size: 13px; color: #F0F0F0; cursor: pointer; }
+.calendar-day.empty { visibility: hidden; cursor: default; }
+.calendar-day.day-green { background: var(--green); }
+.calendar-day.day-yellow { background: var(--yellow); }
+.calendar-day.day-red { background: var(--red); }
+.calendar-day.day-grey { background: var(--grey); cursor: default; color: #777777; }
+.calendar-day.day-future { background: transparent; border: 1px solid var(--border); color: #444444; cursor: default; }
 
-.habit-item .habit-info {
-  flex: 1;
-}
+.calendar-legend { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 24px; }
+.legend-item { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-secondary); }
+.legend-swatch { width: 10px; height: 10px; border-radius: 2px; }
 
-.habit-item .habit-name {
-  font-weight: bold;
-}
-
-.habit-item .habit-streak {
-  font-size: 13px;
-  color: #666;
-}
-
-.habit-actions {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-}
-
-.remove-btn {
-  background: #c0392b;
-  color: #fff;
-  border: none;
-  border-radius: 6px;
-  padding: 6px 10px;
-  font-size: 14px;
-  cursor: pointer;
-}
-
-.done-btn {
-  background: #27ae60;
-  color: #fff;
-  border: none;
-  border-radius: 6px;
-  padding: 6px 10px;
-  font-size: 14px;
-  cursor: pointer;
-}
-
-.done-btn.done {
-  background: #95a5a6;
-}
-
-.summary-box {
-  background: #f0f0f0;
-  border-radius: 6px;
-  padding: 12px;
-  margin-bottom: 16px;
-  text-align: center;
-}
-
-.summary-box .percent {
-  font-size: 32px;
-  font-weight: bold;
-}
-
-.section {
-  margin-bottom: 24px;
-}
-
-.checkbox-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 12px 0;
-}
-
-.checkbox-row input {
-  width: auto;
-}
-
-.add-habit-row {
-  display: flex;
-  gap: 8px;
-}
-
-.add-habit-row input {
-  flex: 1;
-}
-
-.add-habit-row button {
-  width: auto;
-  padding: 10px 16px;
-}
-
-.loading {
-  text-align: center;
-  padding: 40px 0;
-  color: #888;
-}
-
-.error-msg {
-  color: #c0392b;
-  margin-bottom: 12px;
-}
+/* Day detail */
+.day-detail-habit { display: flex; align-items: center; gap: 8px; padding: 10px 0; font-size: 15px; }
+.day-detail-habit.completed { color: var(--green); }
+.day-detail-habit.missed { color: var(--red); }
+.reflection-text { color: var(--text-primary); font-size: 15px; }
+.reflection-empty { color: var(--text-secondary); font-style: italic; font-size: 15px; }
