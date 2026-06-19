@@ -5,6 +5,13 @@ let appState = {
   checkinToday: null,
   todayStr: null,
   isFirstSession: false,
+  screen: "today",
+  allHabitsEver: null,
+  historyOffset: 0,
+  historyLogs: [],
+  historyCheckins: [],
+  selectedDay: null,
+  selectedDayMiss: null,
   onboardingData: {
     goal: null,
     customGoal: "",
@@ -15,6 +22,7 @@ let appState = {
 
 let currentUser = null;
 let authMode = "login";
+let historyRequestToken = 0;
 
 const HABIT_TEMPLATES = {
   "Discipline / Consistency": {
@@ -50,7 +58,6 @@ function escapeHtml(str) {
   return d.innerHTML;
 }
 
-// NEW — safe for use inside value="..." attributes (escapeHtml alone is not)
 function escapeAttr(str) {
   return String(str ?? '')
     .replace(/&/g, '&amp;')
@@ -61,16 +68,19 @@ function escapeAttr(str) {
 }
 
 function getTodayStr() {
-  const d = new Date();
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
+  return formatDate(new Date());
 }
 
 function parseLocalDate(dateStr) {
   const [y, m, d] = dateStr.split('-').map(Number);
   return new Date(y, m - 1, d);
+}
+
+function formatDate(d) {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
 }
 
 function $(selector) {
@@ -81,27 +91,39 @@ function render(html) {
   $("#app").innerHTML = html;
 }
 
+function renderWithNav(contentHtml, activeTab) {
+  render(`
+    <div class="page-content">${contentHtml}</div>
+    <nav class="nav-bar">
+      <div class="nav-item ${activeTab === 'today' ? 'active' : ''}" onclick="goToToday()">Today</div>
+      <div class="nav-item ${activeTab === 'history' ? 'active' : ''}" onclick="goToHistory()">History</div>
+    </nav>
+  `);
+}
+
 // ===== AUTH SCREEN =====
 function renderAuthScreen() {
   render(`
-    <h1>Discipline</h1>
-    <p>${authMode === "login" ? "Log in to continue" : "Create your account"}</p>
+    <div class="page-content">
+      <h1>Discipline</h1>
+      <p>${authMode === "login" ? "Log in to continue" : "Create your account"}</p>
 
-    <label>Email</label>
-    <input type="email" id="authEmail" placeholder="you@example.com" />
+      <label>Email</label>
+      <input type="email" id="authEmail" placeholder="you@example.com" />
 
-    <label>Password</label>
-    <input type="password" id="authPassword" placeholder="At least 6 characters" />
+      <label>Password</label>
+      <input type="password" id="authPassword" placeholder="At least 6 characters" />
 
-    <div id="authError" class="error-msg"></div>
+      <div id="authError" class="error-msg"></div>
 
-    <button class="btn" id="authSubmitBtn" onclick="handleAuthSubmit()">
-      ${authMode === "login" ? "Log In" : "Sign Up"}
-    </button>
+      <button class="btn" id="authSubmitBtn" onclick="handleAuthSubmit()">
+        ${authMode === "login" ? "Log In" : "Sign Up"}
+      </button>
 
-    <button class="btn btn-secondary" onclick="toggleAuthMode()">
-      ${authMode === "login" ? "Don't have an account? Sign Up" : "Already have an account? Log In"}
-    </button>
+      <button class="btn btn-secondary" onclick="toggleAuthMode()">
+        ${authMode === "login" ? "Don't have an account? Sign Up" : "Already have an account? Log In"}
+      </button>
+    </div>
   `);
 }
 
@@ -171,6 +193,7 @@ async function initApp() {
       .from("habits")
       .select("*")
       .eq("user_id", currentUser.id)
+      .is("deleted_at", null)
       .order("created_at", { ascending: true });
 
     if (habitsErr) throw habitsErr;
@@ -199,8 +222,8 @@ async function initApp() {
       await renderDashboard();
     }
   } catch (err) {
-    render(`<div class="error-msg">Error loading app: ${escapeHtml(err.message)}</div>
-      <button class="btn" onclick="initApp()">Retry</button>`);
+    render(`<div class="page-content"><div class="error-msg">Error loading app: ${escapeHtml(err.message)}</div>
+      <button class="btn" onclick="initApp()">Retry</button></div>`);
   }
 }
 
@@ -231,11 +254,13 @@ function renderOnboardingStep1() {
   }
 
   render(`
-    <h2>Step 1 of 4</h2>
-    <h1>What do you want to improve?</h1>
-    <div class="option-list">${optionsHtml}</div>
-    ${customInputHtml}
-    <button class="btn" onclick="goToStep2()">Next</button>
+    <div class="page-content">
+      <h2>Step 1 of 4</h2>
+      <h1>What do you want to improve?</h1>
+      <div class="option-list">${optionsHtml}</div>
+      ${customInputHtml}
+      <button class="btn" onclick="goToStep2()">Next</button>
+    </div>
   `);
 }
 
@@ -268,11 +293,13 @@ function renderOnboardingStep2() {
   `).join("");
 
   render(`
-    <h2>Step 2 of 4</h2>
-    <h1>How serious are you?</h1>
-    <div class="option-list">${optionsHtml}</div>
-    <button class="btn btn-secondary" onclick="renderOnboardingStep1()">Back</button>
-    <button class="btn" onclick="goToStep3()">Next</button>
+    <div class="page-content">
+      <h2>Step 2 of 4</h2>
+      <h1>How serious are you?</h1>
+      <div class="option-list">${optionsHtml}</div>
+      <button class="btn btn-secondary" onclick="renderOnboardingStep1()">Back</button>
+      <button class="btn" onclick="goToStep3()">Next</button>
+    </div>
   `);
 }
 
@@ -310,16 +337,18 @@ function renderOnboardingStep3() {
   `).join("");
 
   render(`
-    <h2>Step 3 of 4</h2>
-    <h1>Your habits</h1>
-    <p>Based on your answers, here are some suggested habits. You can add or remove them.</p>
-    <div id="habitListContainer">${habitsHtml}</div>
-    <div class="add-habit-row">
-      <input type="text" id="newHabitInput" placeholder="Add a habit" />
-      <button class="btn" onclick="addOnboardingHabit()" style="margin:0;">Add</button>
+    <div class="page-content">
+      <h2>Step 3 of 4</h2>
+      <h1>Your habits</h1>
+      <p>Based on your answers, here are some suggested habits. You can add or remove them.</p>
+      <div id="habitListContainer">${habitsHtml}</div>
+      <div class="add-habit-row">
+        <input type="text" id="newHabitInput" placeholder="Add a habit" />
+        <button class="btn" onclick="addOnboardingHabit()" style="margin:0;">Add</button>
+      </div>
+      <button class="btn btn-secondary" onclick="renderOnboardingStep2()">Back</button>
+      <button class="btn" onclick="goToStep4()">Next</button>
     </div>
-    <button class="btn btn-secondary" onclick="renderOnboardingStep2()">Back</button>
-    <button class="btn" onclick="goToStep4()">Next</button>
   `);
 }
 
@@ -355,11 +384,13 @@ function renderOnboardingStep4() {
   `).join("");
 
   render(`
-    <h2>Step 4 of 4</h2>
-    <h1>Confirm your habits</h1>
-    <div>${habitsHtml}</div>
-    <button class="btn btn-secondary" onclick="renderOnboardingStep3()">Back</button>
-    <button class="btn" onclick="saveOnboardingHabits()">Confirm & Save</button>
+    <div class="page-content">
+      <h2>Step 4 of 4</h2>
+      <h1>Confirm your habits</h1>
+      <div>${habitsHtml}</div>
+      <button class="btn btn-secondary" onclick="renderOnboardingStep3()">Back</button>
+      <button class="btn" onclick="saveOnboardingHabits()">Confirm & Save</button>
+    </div>
   `);
 }
 
@@ -382,13 +413,14 @@ async function saveOnboardingHabits() {
     appState.isFirstSession = true;
     renderCheckIn();
   } catch (err) {
-    render(`<div class="error-msg">Error saving habits: ${escapeHtml(err.message)}</div>
-      <button class="btn" onclick="renderOnboardingStep4()">Back</button>`);
+    render(`<div class="page-content"><div class="error-msg">Error saving habits: ${escapeHtml(err.message)}</div>
+      <button class="btn" onclick="renderOnboardingStep4()">Back</button></div>`);
   }
 }
 
 // ===== DAILY CHECK-IN =====
 function renderCheckIn() {
+  appState.screen = "today";
   const yesterdayHtml = appState.isFirstSession
     ? `<p style="color:#888; font-size:14px; margin: 12px 0;">
         Welcome! This is your first day — no yesterday to review yet.
@@ -398,7 +430,7 @@ function renderCheckIn() {
         <label for="completedInput">Did you complete yesterday's goals?</label>
        </div>`;
 
-  render(`
+  renderWithNav(`
     <h1>Daily Check-In</h1>
     <p>${appState.todayStr}</p>
 
@@ -411,11 +443,9 @@ function renderCheckIn() {
     <textarea id="reflectionInput" rows="3" placeholder="Any thoughts about yesterday or today"></textarea>
 
     <button class="btn" onclick="saveCheckIn()">Save Check-In</button>
-  `);
+  `, "today");
 }
 
-// CHANGED — upsert instead of insert, so a duplicate save updates today's
-// row instead of creating a second one
 async function saveCheckIn() {
   const intention = $("#intentionInput").value.trim();
   const completedCheckbox = $("#completedInput");
@@ -444,14 +474,14 @@ async function saveCheckIn() {
     appState.checkinToday = data[0];
     await renderDashboard();
   } catch (err) {
-    render(`<div class="error-msg">Error saving check-in: ${escapeHtml(err.message)}</div>
-      <button class="btn" onclick="renderCheckIn()">Back</button>`);
+    render(`<div class="page-content"><div class="error-msg">Error saving check-in: ${escapeHtml(err.message)}</div>
+      <button class="btn" onclick="renderCheckIn()">Back</button></div>`);
   }
 }
 
 // ===== DASHBOARD =====
-// CHANGED — this now only fetches data, then hands off to renderDashboardView()
 async function renderDashboard() {
+  appState.screen = "today";
   appState.todayStr = getTodayStr();
   render(`<div class="loading">Loading dashboard...</div>`);
 
@@ -471,13 +501,11 @@ async function renderDashboard() {
     appState.allLogs = logs || [];
     renderDashboardView();
   } catch (err) {
-    render(`<div class="error-msg">Error loading dashboard: ${escapeHtml(err.message)}</div>
-      <button class="btn" onclick="renderDashboard()">Retry</button>`);
+    render(`<div class="page-content"><div class="error-msg">Error loading dashboard: ${escapeHtml(err.message)}</div>
+      <button class="btn" onclick="renderDashboard()">Retry</button></div>`);
   }
 }
 
-// NEW — draws the dashboard from whatever is already in memory, no database
-// call. This is what makes "Mark Done" feel instant.
 function renderDashboardView() {
   const todaysLogs = appState.allLogs.filter(l => l.date === appState.todayStr);
 
@@ -505,10 +533,10 @@ function renderDashboardView() {
 
   const completionPercent = calculateCompletionPercent();
 
-  render(`
+  renderWithNav(`
     <button class="btn btn-secondary" onclick="handleLogout()" style="margin-bottom:16px;">Log Out</button>
 
-    <h1>Dashboard</h1>
+    <h1>Today</h1>
     <p>${appState.todayStr}</p>
 
     <div class="summary-box">
@@ -535,7 +563,7 @@ function renderDashboardView() {
       <p><strong>Completed yesterday's goals:</strong> ${appState.checkinToday.completed ? "Yes" : "No"}</p>
       <p><strong>Reflection:</strong> ${escapeHtml(appState.checkinToday.reflection || "-")}</p>
     </div>
-  `);
+  `, "today");
 }
 
 // ===== HABIT LOGIC =====
@@ -563,13 +591,6 @@ function calculateStreak(habitId) {
   return streak;
 }
 
-function formatDate(d) {
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
-}
-
 function calculateCompletionPercent() {
   if (appState.habits.length === 0) return 0;
 
@@ -583,9 +604,6 @@ function calculateCompletionPercent() {
   return Math.round((completed / total) * 100);
 }
 
-// CHANGED — upsert instead of separate insert/update branches, plus the
-// button is disabled while the request is in flight so fast double-taps
-// can't create two rows for the same habit on the same day
 async function toggleHabitDone(btnEl, habitId, currentlyDone) {
   btnEl.disabled = true;
 
@@ -620,7 +638,6 @@ async function toggleHabitDone(btnEl, habitId, currentlyDone) {
   }
 }
 
-// CHANGED — redraws from memory instead of re-fetching everything
 async function addDashboardHabit() {
   const input = $("#newDashHabitInput");
   const val = input.value.trim();
@@ -641,16 +658,15 @@ async function addDashboardHabit() {
   }
 }
 
-// CHANGED — one delete call instead of two (the database now deletes the
-// habit's logs automatically), and redraws from memory instead of refetching
 async function deleteHabit(habitId) {
   if (!confirm("Remove this habit? This cannot be undone.")) return;
 
   try {
     const { error } = await supabaseClient
       .from("habits")
-      .delete()
-      .eq("id", habitId);
+      .update({ deleted_at: new Date().toISOString() })
+      .eq("id", habitId)
+      .eq("user_id", currentUser.id);
 
     if (error) throw error;
 
@@ -660,6 +676,221 @@ async function deleteHabit(habitId) {
   } catch (err) {
     alert("Error deleting habit: " + err.message);
   }
+}
+
+// ===== NAVIGATION =====
+function goToToday() {
+  appState.screen = "today";
+  if (appState.checkinToday) {
+    renderDashboardView();
+  } else {
+    renderCheckIn();
+  }
+}
+
+async function goToHistory() {
+  appState.screen = "history";
+
+  if (!appState.allHabitsEver) {
+    render(`<div class="loading">Loading history...</div>`);
+    try {
+      const { data, error } = await supabaseClient
+        .from("habits")
+        .select("*")
+        .eq("user_id", currentUser.id);
+      if (error) throw error;
+      appState.allHabitsEver = data || [];
+    } catch (err) {
+      renderWithNav(`<div class="error-msg">Error loading history: ${escapeHtml(err.message)}</div>`, "history");
+      return;
+    }
+  }
+
+  appState.historyOffset = 0;
+  await loadHistoryMonth();
+}
+
+// ===== HISTORY =====
+function getHistoryMonthYearMonth() {
+  const base = new Date();
+  base.setDate(1);
+  base.setMonth(base.getMonth() - appState.historyOffset);
+  return { year: base.getFullYear(), month: base.getMonth() };
+}
+
+function getMonthMatrix(year, month) {
+  const firstDay = new Date(year, month, 1);
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const startDow = (firstDay.getDay() + 6) % 7; // 0 = Monday
+  const cells = [];
+  for (let i = 0; i < startDow; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+  while (cells.length % 7 !== 0) cells.push(null);
+  const weeks = [];
+  for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
+  return weeks;
+}
+
+async function loadHistoryMonth() {
+  const myToken = ++historyRequestToken;
+  render(`<div class="loading">Loading...</div>`);
+  const { year, month } = getHistoryMonthYearMonth();
+  const monthStart = formatDate(new Date(year, month, 1));
+  const monthEnd = formatDate(new Date(year, month + 1, 0));
+
+  try {
+    const [logsRes, checkinsRes] = await Promise.all([
+      supabaseClient.from("habit_logs").select("*").eq("user_id", currentUser.id).gte("date", monthStart).lte("date", monthEnd),
+      supabaseClient.from("daily_checkins").select("*").eq("user_id", currentUser.id).gte("date", monthStart).lte("date", monthEnd)
+    ]);
+    if (logsRes.error) throw logsRes.error;
+    if (checkinsRes.error) throw checkinsRes.error;
+
+    if (myToken !== historyRequestToken) return;
+
+    appState.historyLogs = logsRes.data || [];
+    appState.historyCheckins = checkinsRes.data || [];
+    renderHistoryCalendar();
+  } catch (err) {
+    if (myToken !== historyRequestToken) return;
+    renderWithNav(`<div class="error-msg">Error loading history: ${escapeHtml(err.message)}</div>
+      <button class="btn" onclick="loadHistoryMonth()">Retry</button>`, "history");
+  }
+}
+
+function changeHistoryMonth(dir) {
+  let newOffset = appState.historyOffset + (dir === "back" ? 1 : -1);
+  if (newOffset < 0) newOffset = 0;
+  if (newOffset > 6) newOffset = 6;
+  if (newOffset === appState.historyOffset) return;
+  appState.historyOffset = newOffset;
+  loadHistoryMonth();
+}
+
+function getHabitsExistingOn(dateStr) {
+  return appState.allHabitsEver.filter(h => {
+    const createdStr = h.created_at.slice(0, 10);
+    const deletedStr = h.deleted_at ? h.deleted_at.slice(0, 10) : null;
+    return createdStr <= dateStr && (!deletedStr || deletedStr > dateStr);
+  });
+}
+
+function computeDayStatus(dateStr, accountCreatedStr) {
+  if (dateStr > appState.todayStr) return "future";
+  if (dateStr < accountCreatedStr) return "grey";
+
+  const existingHabits = getHabitsExistingOn(dateStr);
+  if (existingHabits.length === 0) return "grey";
+
+  const existingIds = new Set(existingHabits.map(h => h.id));
+  const completedCount = appState.historyLogs.filter(
+    l => l.date === dateStr && l.completed && existingIds.has(l.habit_id)
+  ).length;
+
+  if (completedCount === 0) return "red";
+  if (completedCount === existingHabits.length) return "green";
+  return "yellow";
+}
+
+function renderHistoryCalendar() {
+  const { year, month } = getHistoryMonthYearMonth();
+  const monthLabel = new Date(year, month, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  const matrix = getMonthMatrix(year, month);
+  const accountCreatedStr = currentUser.created_at.slice(0, 10);
+  const weekdaysHtml = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'].map(d => `<div>${d}</div>`).join('');
+
+  const cellsHtml = matrix.flat().map(dayNum => {
+    if (dayNum === null) return `<div class="calendar-day empty"></div>`;
+    const dateStr = formatDate(new Date(year, month, dayNum));
+    const status = computeDayStatus(dateStr, accountCreatedStr);
+    const clickable = status !== "grey" && status !== "future";
+    const onclickAttr = clickable ? ` onclick="openDayDetail('${dateStr}')"` : '';
+    return `<div class="calendar-day day-${status}"${onclickAttr}>${dayNum}</div>`;
+  }).join('');
+
+  const canGoBack = appState.historyOffset < 6;
+  const canGoForward = appState.historyOffset > 0;
+
+  renderWithNav(`
+    <h1>History</h1>
+    <div class="month-nav">
+      <span class="month-nav-arrow ${canGoBack ? '' : 'disabled'}"${canGoBack ? ` onclick="changeHistoryMonth('back')"` : ''}>&lt;</span>
+      <h2>${monthLabel}</h2>
+      <span class="month-nav-arrow ${canGoForward ? '' : 'disabled'}"${canGoForward ? ` onclick="changeHistoryMonth('forward')"` : ''}>&gt;</span>
+    </div>
+    <div class="calendar-weekdays">${weekdaysHtml}</div>
+    <div class="calendar-grid">${cellsHtml}</div>
+    <div class="calendar-legend">
+      <div class="legend-item"><span class="legend-swatch" style="background:#2E7D52"></span>Green</div>
+      <div class="legend-item"><span class="legend-swatch" style="background:#A67C00"></span>Yellow</div>
+      <div class="legend-item"><span class="legend-swatch" style="background:#7D2E2E"></span>Red</div>
+      <div class="legend-item"><span class="legend-swatch" style="background:#333333"></span>Grey</div>
+    </div>
+  `, "history");
+}
+
+async function openDayDetail(dateStr) {
+  render(`<div class="loading">Loading...</div>`);
+  try {
+    const { data: missData, error: missErr } = await supabaseClient
+      .from("miss_reflections")
+      .select("*")
+      .eq("user_id", currentUser.id)
+      .eq("missed_date", dateStr)
+      .limit(1);
+    if (missErr) throw missErr;
+
+    appState.selectedDayMiss = (missData && missData[0]) || null;
+    appState.selectedDay = dateStr;
+    renderDayDetail();
+  } catch (err) {
+    renderWithNav(`<div class="error-msg">Error loading day: ${escapeHtml(err.message)}</div>
+      <button class="btn" onclick="renderHistoryCalendar()">Back</button>`, "history");
+  }
+}
+
+function renderDayDetail() {
+  const dateStr = appState.selectedDay;
+  const dateObj = parseLocalDate(dateStr);
+  const heading = dateObj.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+
+  const existingHabits = getHabitsExistingOn(dateStr);
+  const dayLogs = appState.historyLogs.filter(l => l.date === dateStr);
+
+  const habitsHtml = existingHabits.map(h => {
+    const log = dayLogs.find(l => l.habit_id === h.id);
+    const done = log ? log.completed : false;
+    return `<div class="day-detail-habit ${done ? 'completed' : 'missed'}">${done ? '✓' : '✕'} ${escapeHtml(h.name)}</div>`;
+  }).join('');
+
+  const checkin = appState.historyCheckins.find(c => c.date === dateStr);
+  const reflectionHtml = checkin && checkin.reflection
+    ? `<p class="reflection-text">${escapeHtml(checkin.reflection)}</p>`
+    : `<p class="reflection-empty">No reflection written</p>`;
+
+  const missHtml = appState.selectedDayMiss
+    ? `<div class="divider"></div>
+       <div class="section">
+         <h2>Why you missed</h2>
+         <p class="reflection-text">${escapeHtml(appState.selectedDayMiss.response)}</p>
+       </div>`
+    : '';
+
+  renderWithNav(`
+    <button class="btn btn-secondary" onclick="renderHistoryCalendar()" style="width:auto; padding:0 16px;">← Back</button>
+    <h1>${heading}</h1>
+    <div class="divider"></div>
+    <div class="section">
+      <h2>Habits</h2>
+      ${habitsHtml || '<p class="subtext">No habits existed this day.</p>'}
+    </div>
+    <div class="divider"></div>
+    <div class="section">
+      <h2>Reflection</h2>
+      ${reflectionHtml}
+    </div>
+    ${missHtml}
+  `, "history");
 }
 
 // ===== START =====
