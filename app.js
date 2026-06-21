@@ -2,17 +2,22 @@
 let appState = {
   habits: [],
   allLogs: [],
+  allHabitsEver: null,
   checkinToday: null,
   todayStr: null,
   isFirstSession: false,
   screen: "today",
-  allHabitsEver: null,
   historyOffset: 0,
   historyLogs: [],
   historyCheckins: [],
   selectedDay: null,
   selectedDayMiss: null,
   pendingMissDate: null,
+  memorySourceDateForSave: null,
+  memoryCardData: null,
+  memoryCardDismissedThisLoad: false,
+  weekScoreLabel: null,
+  weeklyScores: [],
   onboardingData: {
     goal: null,
     customGoal: "",
@@ -22,7 +27,9 @@ let appState = {
 };
 
 let currentUser = null;
-let authMode = "login";
+let authMode = "login"; // login | signup
+let authScreen = "auth"; // auth | forgotPassword
+let recoveryMode = false;
 let historyRequestToken = 0;
 let missGuardActive = false;
 
@@ -85,6 +92,12 @@ function formatDate(d) {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+function addDaysToStr(dateStr, n) {
+  const d = parseLocalDate(dateStr);
+  d.setDate(d.getDate() + n);
+  return formatDate(d);
+}
+
 function $(selector) {
   return document.querySelector(selector);
 }
@@ -103,8 +116,17 @@ function renderWithNav(contentHtml, activeTab) {
   `);
 }
 
+// ===== AUTH STATE LISTENER (Password Recovery) =====
+supabaseClient.auth.onAuthStateChange((event, session) => {
+  if (event === "PASSWORD_RECOVERY") {
+    recoveryMode = true;
+    renderResetPasswordScreen();
+  }
+});
+
 // ===== AUTH SCREEN =====
 function renderAuthScreen() {
+  authScreen = "auth";
   render(`
     <div class="page-content">
       <h1>Discipline</h1>
@@ -121,6 +143,8 @@ function renderAuthScreen() {
       <button class="btn" id="authSubmitBtn" onclick="handleAuthSubmit()">
         ${authMode === "login" ? "Log In" : "Sign Up"}
       </button>
+
+      ${authMode === "login" ? `<div class="link-text" onclick="goToForgotPassword()">Forgot password?</div>` : ""}
 
       <button class="btn btn-secondary" onclick="toggleAuthMode()">
         ${authMode === "login" ? "Don't have an account? Sign Up" : "Already have an account? Log In"}
@@ -177,11 +201,113 @@ async function handleLogout() {
   renderAuthScreen();
 }
 
+// ===== PASSWORD RECOVERY =====
+function goToForgotPassword() {
+  authScreen = "forgotPassword";
+  renderForgotPasswordScreen();
+}
+
+function renderForgotPasswordScreen(confirmationShown) {
+  render(`
+    <div class="page-content">
+      <button class="btn btn-secondary" style="width:auto; padding:0 16px; margin-bottom:16px;" onclick="renderAuthScreen()">← Back</button>
+      <h1>Reset your password</h1>
+      <p class="subtext">Enter the email you signed up with</p>
+
+      <input type="email" id="forgotEmail" placeholder="Email address" />
+
+      <div id="forgotError" class="error-msg"></div>
+
+      <button class="btn" id="forgotSubmitBtn" onclick="handleSendResetLink()">Send reset link</button>
+
+      ${confirmationShown ? `<div class="divider"></div><p class="subtext">If that email is registered, a reset link has been sent.</p>` : ""}
+    </div>
+  `);
+}
+
+async function handleSendResetLink() {
+  const email = $("#forgotEmail").value.trim();
+  const errorBox = $("#forgotError");
+  const btn = $("#forgotSubmitBtn");
+  errorBox.textContent = "";
+
+  if (!email) {
+    errorBox.textContent = "Please enter your email.";
+    return;
+  }
+
+  btn.disabled = true;
+
+  try {
+    await supabaseClient.auth.resetPasswordForEmail(email, {
+      redirectTo: window.location.origin + window.location.pathname
+    });
+  } catch (err) {
+    // Per security rule, never reveal whether this failed because of the email — always show the same message.
+  }
+
+  renderForgotPasswordScreen(true);
+}
+
+function renderResetPasswordScreen() {
+  render(`
+    <div class="page-content">
+      <h1>Set new password</h1>
+
+      <input type="password" id="newPasswordInput" placeholder="New password" />
+      <input type="password" id="confirmPasswordInput" placeholder="Confirm new password" />
+
+      <div id="resetError" class="error-msg"></div>
+
+      <button class="btn" id="resetSubmitBtn" onclick="handleUpdatePassword()">Update password</button>
+    </div>
+  `);
+}
+
+async function handleUpdatePassword() {
+  const pw1 = $("#newPasswordInput").value;
+  const pw2 = $("#confirmPasswordInput").value;
+  const errorBox = $("#resetError");
+  const btn = $("#resetSubmitBtn");
+  errorBox.textContent = "";
+
+  if (pw1 !== pw2) {
+    errorBox.textContent = "Passwords do not match";
+    return;
+  }
+  if (pw1.length < 8) {
+    errorBox.textContent = "Password must be at least 8 characters";
+    return;
+  }
+
+  btn.disabled = true;
+
+  try {
+    const { error } = await supabaseClient.auth.updateUser({ password: pw1 });
+    if (error) throw error;
+
+    recoveryMode = false;
+    await supabaseClient.auth.signOut();
+    currentUser = null;
+    authMode = "login";
+    render(`<div class="page-content">
+      <div class="banner-success">Password updated. Please log in.</div>
+    </div>`);
+    setTimeout(renderAuthScreen, 1200);
+  } catch (err) {
+    errorBox.textContent = "Something went wrong. Please try again.";
+    btn.disabled = false;
+  }
+}
+
 // ===== INIT =====
 async function initApp() {
+  if (recoveryMode) return;
   render(`<div class="loading">Loading...</div>`);
 
   const { data: sessionData } = await supabaseClient.auth.getSession();
+  if (recoveryMode) return;
+
   if (!sessionData.session) {
     currentUser = null;
     renderAuthScreen();
@@ -189,6 +315,7 @@ async function initApp() {
   }
   currentUser = sessionData.session.user;
   appState.todayStr = getTodayStr();
+  appState.memorySourceDateForSave = null;
 
   try {
     const { data: habits, error: habitsErr } = await supabaseClient
@@ -197,9 +324,17 @@ async function initApp() {
       .eq("user_id", currentUser.id)
       .is("deleted_at", null)
       .order("created_at", { ascending: true });
-
     if (habitsErr) throw habitsErr;
+    if (recoveryMode) return;
     appState.habits = habits || [];
+
+    const { data: allHabits, error: allHabitsErr } = await supabaseClient
+      .from("habits")
+      .select("*")
+      .eq("user_id", currentUser.id);
+    if (allHabitsErr) throw allHabitsErr;
+    if (recoveryMode) return;
+    appState.allHabitsEver = allHabits || [];
 
     if (appState.habits.length === 0) {
       renderOnboardingStep1();
@@ -207,6 +342,7 @@ async function initApp() {
     }
 
     const missNeeded = await checkMissModalNeeded();
+    if (recoveryMode) return;
     if (missNeeded) {
       renderMissModal();
       return;
@@ -214,6 +350,7 @@ async function initApp() {
 
     await continueInitAfterMissCheck();
   } catch (err) {
+    if (recoveryMode) return;
     render(`<div class="page-content"><div class="error-msg">Error loading app: ${escapeHtml(err.message)}</div>
       <button class="btn" onclick="initApp()">Retry</button></div>`);
   }
@@ -221,14 +358,17 @@ async function initApp() {
 
 async function continueInitAfterMissCheck() {
   try {
+    await calculateAndStoreWeeklyScores();
+    if (recoveryMode) return;
+
     const { data: checkins, error: checkinErr } = await supabaseClient
       .from("daily_checkins")
       .select("*")
       .eq("user_id", currentUser.id)
       .eq("date", appState.todayStr)
       .limit(1);
-
     if (checkinErr) throw checkinErr;
+    if (recoveryMode) return;
 
     if (!checkins || checkins.length === 0) {
       appState.checkinToday = null;
@@ -239,6 +379,7 @@ async function continueInitAfterMissCheck() {
       await renderDashboard();
     }
   } catch (err) {
+    if (recoveryMode) return;
     render(`<div class="page-content"><div class="error-msg">Error loading app: ${escapeHtml(err.message)}</div>
       <button class="btn" onclick="initApp()">Retry</button></div>`);
   }
@@ -521,6 +662,7 @@ async function saveOnboardingHabits() {
     if (error) throw error;
 
     appState.habits = data || [];
+    appState.allHabitsEver = data || [];
     appState.isFirstSession = true;
     renderCheckIn();
   } catch (err) {
@@ -529,32 +671,59 @@ async function saveOnboardingHabits() {
   }
 }
 
-// ===== DAILY CHECK-IN =====
-function renderCheckIn() {
+// ===== DAILY CHECK-IN (with edit support + memory pre-fill) =====
+function renderCheckIn(editMode) {
   appState.screen = "today";
-  const yesterdayHtml = appState.isFirstSession
+  const existing = appState.checkinToday;
+  const isEditing = !!editMode && !!existing;
+
+  let prefillIntention = "";
+  let prefillCompleted = false;
+  let prefillReflection = "";
+
+  if (isEditing) {
+    prefillIntention = existing.intention || "";
+    prefillCompleted = !!existing.completed;
+    prefillReflection = existing.reflection || "";
+  }
+
+  if (appState.memorySourceDateForSave) {
+    const label = parseLocalDate(appState.memorySourceDateForSave).toLocaleDateString('en-US', { month: 'long', day: 'numeric' });
+    const promptLine = `Revisiting: ${label}. Respond below:`;
+    prefillReflection = prefillReflection
+      ? `${promptLine}\n\n${prefillReflection}`
+      : `${promptLine}\n`;
+  }
+
+  const yesterdayHtml = appState.isFirstSession && !isEditing
     ? `<p style="color:#888; font-size:14px; margin: 12px 0;">
         Welcome! This is your first day — no yesterday to review yet.
        </p>`
     : `<div class="checkbox-row">
-        <input type="checkbox" id="completedInput" />
+        <input type="checkbox" id="completedInput" ${prefillCompleted ? "checked" : ""} />
         <label for="completedInput">Did you complete yesterday's goals?</label>
        </div>`;
 
   renderWithNav(`
-    <h1>Daily Check-In</h1>
+    <h1>${isEditing ? "Edit Check-In" : "Daily Check-In"}</h1>
     <p>${appState.todayStr}</p>
 
     <label>What's your intention for today?</label>
-    <textarea id="intentionInput" rows="3" placeholder="e.g. Stay focused and avoid distractions"></textarea>
+    <textarea id="intentionInput" rows="3" placeholder="e.g. Stay focused and avoid distractions">${escapeHtml(prefillIntention)}</textarea>
 
     ${yesterdayHtml}
 
     <label>Reflection</label>
-    <textarea id="reflectionInput" rows="3" placeholder="Any thoughts about yesterday or today"></textarea>
+    <textarea id="reflectionInput" rows="4" placeholder="Any thoughts about yesterday or today">${escapeHtml(prefillReflection)}</textarea>
 
-    <button class="btn" onclick="saveCheckIn()">Save Check-In</button>
+    <button class="btn" onclick="saveCheckIn()">${isEditing ? "Save Changes" : "Save Check-In"}</button>
+    ${isEditing ? `<button class="btn btn-secondary" onclick="cancelEditCheckIn()">Cancel</button>` : ""}
   `, "today");
+}
+
+function cancelEditCheckIn() {
+  appState.memorySourceDateForSave = null;
+  renderDashboardView();
 }
 
 async function saveCheckIn() {
@@ -562,27 +731,29 @@ async function saveCheckIn() {
   const completedCheckbox = $("#completedInput");
   const completed = completedCheckbox ? completedCheckbox.checked : false;
   const reflection = $("#reflectionInput").value.trim();
+  const memorySourceDate = appState.memorySourceDateForSave;
 
   render(`<div class="loading">Saving check-in...</div>`);
 
   try {
+    const payload = {
+      date: appState.todayStr,
+      intention,
+      completed,
+      reflection,
+      user_id: currentUser.id
+    };
+    if (memorySourceDate) payload.memory_source_date = memorySourceDate;
+
     const { data, error } = await supabaseClient
       .from("daily_checkins")
-      .upsert(
-        {
-          date: appState.todayStr,
-          intention,
-          completed,
-          reflection,
-          user_id: currentUser.id
-        },
-        { onConflict: "user_id,date" }
-      )
+      .upsert(payload, { onConflict: "user_id,date" })
       .select();
 
     if (error) throw error;
 
     appState.checkinToday = data[0];
+    appState.memorySourceDateForSave = null;
     await renderDashboard();
   } catch (err) {
     render(`<div class="page-content"><div class="error-msg">Error saving check-in: ${escapeHtml(err.message)}</div>
@@ -610,6 +781,7 @@ async function renderDashboard() {
     if (logsErr) throw logsErr;
 
     appState.allLogs = logs || [];
+    await checkMemoryCard();
     renderDashboardView();
   } catch (err) {
     render(`<div class="page-content"><div class="error-msg">Error loading dashboard: ${escapeHtml(err.message)}</div>
@@ -645,11 +817,26 @@ function renderDashboardView() {
 
   const completionPercent = calculateCompletionPercent();
 
+  const memoryCardHtml = appState.memoryCardData ? `
+    <div class="memory-card">
+      <div class="memory-card-close" onclick="dismissMemoryCard()">✕</div>
+      <div class="memory-card-label">${escapeHtml(appState.memoryCardData.daysAgoLabel)} — ${escapeHtml(appState.memoryCardData.dateLabel)}</div>
+      <p class="memory-card-text">${escapeHtml(appState.memoryCardData.reflectionText)}</p>
+      <button class="btn" onclick="respondToMemoryCard()">How are you doing now?</button>
+    </div>
+  ` : "";
+
   renderWithNav(`
     <button class="btn btn-secondary" onclick="handleLogout()" style="margin-bottom:16px;">Log Out</button>
 
     <h1>Today</h1>
     <p>${appState.todayStr}</p>
+
+    ${memoryCardHtml}
+
+    <div class="week-score-box">
+      <div class="week-score-label">${appState.weekScoreLabel || "This week: In progress"}</div>
+    </div>
 
     <div class="summary-box">
       <div class="percent">${completionPercent}%</div>
@@ -670,7 +857,10 @@ function renderDashboardView() {
     </div>
 
     <div class="section">
-      <h2>Today's Check-In</h2>
+      <div class="today-checkin-header">
+        <h2>Today's Check-In</h2>
+        <button class="btn btn-secondary btn-small" onclick="renderCheckIn(true)">Edit</button>
+      </div>
       <p><strong>Intention:</strong> ${escapeHtml(appState.checkinToday.intention || "-")}</p>
       <p><strong>Completed yesterday's goals:</strong> ${appState.checkinToday.completed ? "Yes" : "No"}</p>
       <p><strong>Reflection:</strong> ${escapeHtml(appState.checkinToday.reflection || "-")}</p>
@@ -679,9 +869,6 @@ function renderDashboardView() {
 }
 
 // ===== HABIT LOGIC =====
-// Streak now tolerates misses inside a rolling 30-day window:
-// - up to 2 misses total → streak continues, label shows the miss count
-// - a 3rd miss in the window, OR 3 misses in a row → streak resets to 0
 function calculateStreak(habit) {
   const completedDates = new Set(
     appState.allLogs
@@ -692,7 +879,6 @@ function calculateStreak(habit) {
   const createdStr = habit.created_at.slice(0, 10);
   let cursor = parseLocalDate(appState.todayStr);
 
-  // Today still "in progress" if not completed yet — don't count it as a miss
   if (!completedDates.has(formatDate(cursor))) {
     cursor.setDate(cursor.getDate() - 1);
   }
@@ -802,6 +988,7 @@ async function addDashboardHabit() {
     if (error) throw error;
 
     appState.habits.push(data[0]);
+    if (appState.allHabitsEver) appState.allHabitsEver.push(data[0]);
     renderDashboardView();
   } catch (err) {
     alert("Error adding habit: " + err.message);
@@ -812,9 +999,10 @@ async function deleteHabit(habitId) {
   if (!confirm("Remove this habit? This cannot be undone.")) return;
 
   try {
+    const deletedAt = new Date().toISOString();
     const { error } = await supabaseClient
       .from("habits")
-      .update({ deleted_at: new Date().toISOString() })
+      .update({ deleted_at: deletedAt })
       .eq("id", habitId)
       .eq("user_id", currentUser.id);
 
@@ -822,6 +1010,10 @@ async function deleteHabit(habitId) {
 
     appState.habits = appState.habits.filter(h => h.id !== habitId);
     appState.allLogs = appState.allLogs.filter(l => l.habit_id !== habitId);
+    if (appState.allHabitsEver) {
+      const h = appState.allHabitsEver.find(x => x.id === habitId);
+      if (h) h.deleted_at = deletedAt;
+    }
     renderDashboardView();
   } catch (err) {
     alert("Error deleting habit: " + err.message);
@@ -889,17 +1081,20 @@ async function loadHistoryMonth() {
   const monthEnd = formatDate(new Date(year, month + 1, 0));
 
   try {
-    const [logsRes, checkinsRes] = await Promise.all([
+    const [logsRes, checkinsRes, scoresRes] = await Promise.all([
       supabaseClient.from("habit_logs").select("*").eq("user_id", currentUser.id).gte("date", monthStart).lte("date", monthEnd),
-      supabaseClient.from("daily_checkins").select("*").eq("user_id", currentUser.id).gte("date", monthStart).lte("date", monthEnd)
+      supabaseClient.from("daily_checkins").select("*").eq("user_id", currentUser.id).gte("date", monthStart).lte("date", monthEnd),
+      supabaseClient.from("weekly_scores").select("*").eq("user_id", currentUser.id).order("week_start", { ascending: false }).limit(8)
     ]);
     if (logsRes.error) throw logsRes.error;
     if (checkinsRes.error) throw checkinsRes.error;
+    if (scoresRes.error) throw scoresRes.error;
 
     if (myToken !== historyRequestToken) return;
 
     appState.historyLogs = logsRes.data || [];
     appState.historyCheckins = checkinsRes.data || [];
+    appState.weeklyScores = (scoresRes.data || []).slice().reverse();
     renderHistoryCalendar();
   } catch (err) {
     if (myToken !== historyRequestToken) return;
@@ -925,6 +1120,14 @@ function getHabitsExistingOn(dateStr) {
   });
 }
 
+function getHabitsActiveInWeek(monday, sunday) {
+  return appState.allHabitsEver.filter(h => {
+    const createdStr = h.created_at.slice(0, 10);
+    const deletedStr = h.deleted_at ? h.deleted_at.slice(0, 10) : null;
+    return createdStr <= sunday && (!deletedStr || deletedStr > monday);
+  });
+}
+
 function computeDayStatus(dateStr, accountCreatedStr) {
   if (dateStr > appState.todayStr) return "future";
   if (dateStr < accountCreatedStr) return "grey";
@@ -940,6 +1143,31 @@ function computeDayStatus(dateStr, accountCreatedStr) {
   if (completedCount === 0) return "red";
   if (completedCount === existingHabits.length) return "green";
   return "yellow";
+}
+
+function renderScoreChart() {
+  if (appState.weeklyScores.length === 0) {
+    return `<div class="section"><h2>Score History</h2><p class="score-empty">No completed weeks yet.</p></div>`;
+  }
+
+  const barsHtml = appState.weeklyScores.map(s => {
+    const heightPx = Math.max(4, Math.round((s.score / 100) * 100));
+    const label = parseLocalDate(s.week_end).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    return `
+      <div class="score-bar-col">
+        <div class="score-bar-num">${s.score}</div>
+        <div class="score-bar" style="height:${heightPx}px;"></div>
+        <div class="score-bar-date">${label}</div>
+      </div>
+    `;
+  }).join("");
+
+  return `
+    <div class="section">
+      <h2>Score History</h2>
+      <div class="score-chart-wrap">${barsHtml}</div>
+    </div>
+  `;
 }
 
 function renderHistoryCalendar() {
@@ -976,6 +1204,7 @@ function renderHistoryCalendar() {
       <div class="legend-item"><span class="legend-swatch" style="background:#7D2E2E"></span>Red</div>
       <div class="legend-item"><span class="legend-swatch" style="background:#333333"></span>Grey</div>
     </div>
+    ${renderScoreChart()}
   `, "history");
 }
 
@@ -1043,6 +1272,241 @@ function renderDayDetail() {
   `, "history");
 }
 
+// ===== WEEKLY DISCIPLINE SCORE =====
+function getMondayOf(dateStr) {
+  const d = parseLocalDate(dateStr);
+  const dow = d.getDay(); // 0=Sun..6=Sat
+  const diffToMonday = dow === 0 ? -6 : 1 - dow;
+  d.setDate(d.getDate() + diffToMonday);
+  return formatDate(d);
+}
+
+async function calculateAndStoreWeeklyScores() {
+  const accountCreatedStr = currentUser.created_at.slice(0, 10);
+  const thisMonday = getMondayOf(appState.todayStr);
+
+  // Walk backward up to 10 weeks looking for any unstored, fully-ended weeks.
+  let cursorMonday = addDaysToStr(thisMonday, -7);
+  for (let i = 0; i < 10; i++) {
+    const weekSunday = addDaysToStr(cursorMonday, 6);
+    if (weekSunday >= appState.todayStr) {
+      cursorMonday = addDaysToStr(cursorMonday, -7);
+      continue;
+    }
+    if (cursorMonday < accountCreatedStr && weekSunday < accountCreatedStr) break;
+
+    const { data: existingScore, error: existingErr } = await supabaseClient
+      .from("weekly_scores")
+      .select("id")
+      .eq("user_id", currentUser.id)
+      .eq("week_start", cursorMonday)
+      .limit(1);
+    if (existingErr) throw existingErr;
+
+    if (!existingScore || existingScore.length === 0) {
+      await computeAndStoreOneWeek(cursorMonday, weekSunday);
+    }
+
+    cursorMonday = addDaysToStr(cursorMonday, -7);
+  }
+
+  await loadCurrentWeekScoreLabel();
+}
+
+async function computeAndStoreOneWeek(monday, sunday) {
+  const activeHabits = getHabitsActiveInWeek(monday, sunday);
+  if (activeHabits.length === 0) return; // edge case: no habits that week -> skip entirely
+
+  const [logsRes, checkinsRes, missRes] = await Promise.all([
+    supabaseClient.from("habit_logs").select("*").eq("user_id", currentUser.id).gte("date", monday).lte("date", sunday),
+    supabaseClient.from("daily_checkins").select("*").eq("user_id", currentUser.id).gte("date", monday).lte("date", sunday),
+    supabaseClient.from("miss_reflections").select("*").eq("user_id", currentUser.id).gte("missed_date", monday).lte("missed_date", sunday)
+  ]);
+  if (logsRes.error || checkinsRes.error || missRes.error) return;
+
+  const weekLogs = logsRes.data || [];
+  const weekCheckins = checkinsRes.data || [];
+  const weekMisses = missRes.data || [];
+
+  const activeIds = new Set(activeHabits.map(h => h.id));
+  const perHabitPoints = 80 / activeHabits.length;
+
+  let habitScore = 0;
+  for (const h of activeHabits) {
+    const daysCompleted = weekLogs.filter(l => l.habit_id === h.id && l.completed).length;
+    habitScore += perHabitPoints * (daysCompleted / 7);
+  }
+
+  const reflectionDays = weekCheckins.filter(c => c.reflection && c.reflection.trim().length > 0).length;
+  const reflectionBonus = reflectionDays >= 4 ? 5 : 0;
+
+  // Determine miss days: any day in week with active habits and zero completions
+  let missDays = [];
+  let cur = monday;
+  while (cur <= sunday) {
+    const dayActiveIds = new Set(getHabitsExistingOn(cur).filter(h => activeIds.has(h.id)).map(h => h.id));
+    if (dayActiveIds.size > 0) {
+      const completedCount = weekLogs.filter(l => l.date === cur && l.completed && dayActiveIds.has(l.habit_id)).length;
+      if (completedCount === 0) missDays.push(cur);
+    }
+    cur = addDaysToStr(cur, 1);
+  }
+
+  let missBonus;
+  if (missDays.length === 0) {
+    missBonus = 5;
+  } else {
+    const allAnswered = missDays.every(d => weekMisses.some(m => m.missed_date === d));
+    missBonus = allAnswered ? 5 : 0;
+  }
+
+  const rawScore = habitScore + reflectionBonus + missBonus;
+  const displayedScore = Math.round((rawScore / 90) * 100);
+
+  try {
+    await supabaseClient.from("weekly_scores").upsert(
+      {
+        user_id: currentUser.id,
+        week_start: monday,
+        week_end: sunday,
+        score: Math.max(0, Math.min(100, displayedScore)),
+        raw_score: rawScore
+      },
+      { onConflict: "user_id,week_start" }
+    );
+  } catch (err) {
+    // Non-fatal — score will simply be recalculated on next load
+  }
+}
+
+async function loadCurrentWeekScoreLabel() {
+  try {
+    const { data, error } = await supabaseClient
+      .from("weekly_scores")
+      .select("*")
+      .eq("user_id", currentUser.id)
+      .order("week_start", { ascending: false })
+      .limit(1);
+    if (error) throw error;
+
+    if (data && data.length > 0) {
+      appState.weekScoreLabel = `This week: ${data[0].score} / 100`;
+    } else {
+      appState.weekScoreLabel = "This week: In progress";
+    }
+  } catch (err) {
+    appState.weekScoreLabel = "This week: In progress";
+  }
+}
+
+// ===== REFLECTION MEMORY =====
+async function checkMemoryCard() {
+  appState.memoryCardData = null;
+
+  const accountCreatedStr = currentUser.created_at.slice(0, 10);
+  const accountAgeDays = Math.floor((parseLocalDate(appState.todayStr) - parseLocalDate(accountCreatedStr)) / 86400000);
+  if (accountAgeDays < 31) return;
+
+  try {
+    const { data: rows, error } = await supabaseClient
+      .from("memory_state")
+      .select("*")
+      .eq("user_id", currentUser.id)
+      .lte("window_start", appState.todayStr)
+      .order("window_start", { ascending: false })
+      .limit(1);
+    if (error) throw error;
+
+    let row = rows && rows[0];
+    const windowEnd = row ? addDaysToStr(row.window_start, 6) : null;
+    const rowCoversToday = row && windowEnd >= appState.todayStr;
+
+    if (!rowCoversToday) {
+      const randomOffset = Math.floor(Math.random() * 7);
+      const newRow = {
+        user_id: currentUser.id,
+        window_start: appState.todayStr,
+        scheduled_day: addDaysToStr(appState.todayStr, randomOffset),
+        source_reflection_date: null,
+        dismissed_today: null
+      };
+      const { data: inserted, error: insErr } = await supabaseClient
+        .from("memory_state")
+        .upsert(newRow, { onConflict: "user_id,window_start" })
+        .select();
+      if (insErr) throw insErr;
+      row = inserted[0];
+    }
+
+    if (row.dismissed_today === appState.todayStr) return;
+    if (row.scheduled_day !== appState.todayStr) return;
+
+    const candidates = [90, 60, 30];
+    let sourceDate = null;
+    let reflectionText = null;
+
+    for (const daysAgo of candidates) {
+      const candidateDate = addDaysToStr(appState.todayStr, -daysAgo);
+      const { data: checkinData, error: checkinErr } = await supabaseClient
+        .from("daily_checkins")
+        .select("date, reflection")
+        .eq("user_id", currentUser.id)
+        .eq("date", candidateDate)
+        .limit(1);
+      if (checkinErr) continue;
+      if (checkinData && checkinData.length > 0 && checkinData[0].reflection && checkinData[0].reflection.trim().length > 0) {
+        sourceDate = candidateDate;
+        reflectionText = checkinData[0].reflection;
+        break;
+      }
+    }
+
+    if (!sourceDate) return; // no eligible reflection -> do not show this week
+
+    if (row.source_reflection_date !== sourceDate) {
+      await supabaseClient
+        .from("memory_state")
+        .update({ source_reflection_date: sourceDate })
+        .eq("id", row.id);
+    }
+
+    const daysAgoActual = Math.round((parseLocalDate(appState.todayStr) - parseLocalDate(sourceDate)) / 86400000);
+    const dateLabel = parseLocalDate(sourceDate).toLocaleDateString('en-US', { month: 'long', day: 'numeric' });
+
+    appState.memoryCardData = {
+      sourceDate,
+      reflectionText,
+      daysAgoLabel: `${daysAgoActual} days ago`,
+      dateLabel,
+      memoryStateId: row.id
+    };
+  } catch (err) {
+    appState.memoryCardData = null;
+  }
+}
+
+async function dismissMemoryCard() {
+  if (!appState.memoryCardData) return;
+  const id = appState.memoryCardData.memoryStateId;
+  appState.memoryCardData = null;
+  renderDashboardView();
+  try {
+    await supabaseClient
+      .from("memory_state")
+      .update({ dismissed_today: appState.todayStr })
+      .eq("id", id);
+  } catch (err) {
+    // Non-fatal — worst case the card reappears if user reloads today
+  }
+}
+
+function respondToMemoryCard() {
+  if (!appState.memoryCardData) return;
+  appState.memorySourceDateForSave = appState.memoryCardData.sourceDate;
+  appState.memoryCardData = null;
+  renderCheckIn(true);
+}
+
 // ===== START =====
 document.addEventListener("DOMContentLoaded", initApp);
-        
+  
