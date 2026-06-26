@@ -1,5 +1,3 @@
-// FILE: app.js — REPLACE ENTIRE FILE
-
 // ===== STATE =====
 let appState = {
   habits: [],
